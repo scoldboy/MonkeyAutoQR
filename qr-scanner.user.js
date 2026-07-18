@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         选区触发扫描二维码
 // @namespace    https://github.com/qr-scanner-selection
-// @version      1.1.0
+// @version      1.1.1
 // @description  鼠标拖动选中图片区域后出现扫描按钮，点击识别图片中的二维码，弹框显示链接
 // @author       Claude
 // @match        *://*/*
@@ -281,6 +281,18 @@
    * 获取当前浏览器选区覆盖的所有符合条件的图片
    * @returns {HTMLImageElement[]}
    */
+  /**
+   * 获取当前浏览器选区「真正选中的」符合条件的图片
+   *
+   * 设计要点（修复「选中文字也弹按钮」的问题）：
+   *   - 旧实现用「选区矩形 ∩ 图片矩形」的几何相交来判定，导致只要文字选区
+   *     与图片在几何上相邻/重叠，就会误弹出扫描按钮——这并不等于「用户选中了图片」。
+   *   - 新实现以 DOM 语义为准：只有当图片节点本身被包含在浏览器选区中
+   *     （Selection.containsNode）时，才视为「用户选中了这张图片」。
+   *   - 纯文字选区不会包含相邻的图片节点，因此不会再误触发；而拖动经过图片
+   *     形成的选区会把图片节点纳入其中，核心「选区触发」体验保持不变。
+   * @returns {HTMLImageElement[]}
+   */
   function getSelectedImages() {
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount === 0) return [];
@@ -291,21 +303,35 @@
     // 选区没有可视矩形（如全选后再点击），跳过
     if (selectionRects.length === 0) return [];
 
+    // 现代浏览器均支持 Selection.containsNode，用它做「语义包含」判定。
+    // 老环境若无此 API，则回退到旧的「几何相交」判定（此时可能仍有少量误触发，
+    // 但保证功能不失效）。目标浏览器（Chrome80+/Edge80+/Firefox78+）均支持，
+    // 该回退分支在正常环境下不会被执行。
+    const useContainment = typeof selection.containsNode === 'function';
+
     const allImages = document.querySelectorAll('img');
     const matched = [];
 
     for (const img of allImages) {
       if (!isQualifiedImage(img)) continue;
 
-      const imgRect = img.getBoundingClientRect();
-
-      // 检查图片矩形与任意一个选区矩形是否有交集
-      for (const selRect of selectionRects) {
-        if (rectsIntersect(imgRect, selRect)) {
-          matched.push(img);
-          break;
+      if (useContainment) {
+        // 核心判定：图片必须真正被「选入」当前选区（部分包含即算，partialContainment=true）
+        if (!selection.containsNode(img, true)) continue;
+      } else {
+        // 降级分支：几何相交判定（旧逻辑）
+        const imgRect = img.getBoundingClientRect();
+        let intersects = false;
+        for (const selRect of selectionRects) {
+          if (rectsIntersect(imgRect, selRect)) {
+            intersects = true;
+            break;
+          }
         }
+        if (!intersects) continue;
       }
+
+      matched.push(img);
     }
 
     return matched;
@@ -933,7 +959,7 @@
     // 窗口大小变化时更新按钮位置
     window.addEventListener('resize', handleScroll, { passive: true });
 
-    console.log('[QR Scanner] 选区触发扫描二维码脚本已启动 (v1.1.0)');
+    console.log('[QR Scanner] 选区触发扫描二维码脚本已启动 (v1.1.1)');
   }
 
   // ==================== 启动 ====================
